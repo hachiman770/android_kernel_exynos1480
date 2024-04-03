@@ -34,6 +34,9 @@ static int ufs_bsg_alloc_desc_buffer(struct ufs_hba *hba, struct bsg_job *job,
 	struct utp_upiu_query *qr;
 	u8 *descp;
 
+	if (desc_op == UPIU_QUERY_OPCODE_WRITE_ATTR)
+		return -EINVAL;
+
 	if (desc_op != UPIU_QUERY_OPCODE_WRITE_DESC &&
 	    desc_op != UPIU_QUERY_OPCODE_READ_DESC)
 		goto out;
@@ -76,7 +79,8 @@ static int ufs_bsg_exec_advanced_rpmb_req(struct ufs_hba *hba, struct bsg_job *j
 	int ret;
 	int data_len;
 
-	if (hba->ufs_version < ufshci_version(4, 0) || !hba->dev_info.b_advanced_rpmb_en)
+	if (hba->ufs_version < ufshci_version(4, 0) || !hba->dev_info.b_advanced_rpmb_en ||
+	    !(hba->capabilities & MASK_EHSLUTRD_SUPPORTED))
 		return -EINVAL;
 
 	if (rpmb_request->ehs_req.length != 2 || rpmb_request->ehs_req.ehs_type != 1)

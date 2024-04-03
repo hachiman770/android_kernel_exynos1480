@@ -3061,6 +3061,8 @@ extern vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 		pgoff_t start_pgoff, pgoff_t end_pgoff);
 extern vm_fault_t filemap_page_mkwrite(struct vm_fault *vmf);
 
+extern unsigned int mmap_readaround_limit;
+
 extern unsigned long stack_guard_gap;
 /* Generic expand stack which grows the stack according to GROWS{UP,DOWN} */
 int expand_stack_locked(struct vm_area_struct *vma, unsigned long address);
@@ -3678,6 +3680,32 @@ void __init setup_nr_node_ids(void);
 static inline void setup_nr_node_ids(void) {}
 #endif
 
+struct seq_file;
+void seq_printf(struct seq_file *m, const char *f, ...);
+
+static inline void show_val_meminfo(struct seq_file *m,
+				    const char *str, long size)
+{
+	char name[17];
+	int len = strlen(str);
+
+	if (len <= 15) {
+		sprintf(name, "%s:", str);
+	} else {
+		strncpy(name, str, 15);
+		name[15] = ':';
+		name[16] = '\0';
+	}
+
+	seq_printf(m, "%-16s%8ld kB\n", name, size);
+}
+
+extern inline bool need_memory_boosting(void);
+
+#ifdef CONFIG_RBIN
+extern unsigned long rbin_total;
+#endif
+
 extern int memcmp_pages(struct page *page1, struct page *page2);
 
 static inline int pages_identical(struct page *page1, struct page *page2)
@@ -3749,5 +3777,9 @@ madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 	return 0;
 }
 #endif
+
+extern phys_addr_t memmapsize;
+extern unsigned long physpages, codesize, datasize, rosize, bss_size;
+extern unsigned long init_code_size, init_data_size;
 
 #endif /* _LINUX_MM_H */

@@ -11,6 +11,7 @@ import importlib.util
 import logging
 import subprocess
 import os
+import glob
 import shlex
 import shutil
 import signal
@@ -31,6 +32,8 @@ OUTFILE_PATH = 'test.log'
 ABS_TOOL_PATH = os.path.abspath(os.path.dirname(__file__))
 QEMU_CONFIGS_DIR = os.path.join(ABS_TOOL_PATH, 'qemu_configs')
 
+DEFAULT_SUBMODULE_KUNITCONFIG_PATH = 'kunitconfigs'
+PREFIX_SUBMODULE_FILE = 'kunitconfig.'
 class ConfigError(Exception):
 	"""Represents an error trying to configure the Linux kernel."""
 
@@ -222,6 +225,18 @@ def _get_qemu_ops(config_path: str,
 	return params.linux_arch, LinuxSourceTreeOperationsQemu(
 			params, cross_compile=cross_compile)
 
+def get_submodule_kunitconfig_path(name):
+	return os.path.join(DEFAULT_SUBMODULE_KUNITCONFIG_PATH, PREFIX_SUBMODULE_FILE + '%s' %name)
+
+def get_sub_config(name):
+	submodule_kunitconfig = get_submodule_kunitconfig_path(name)
+	group_submodule_kunitconfig = glob.glob(submodule_kunitconfig + '*')
+
+	if not group_submodule_kunitconfig:
+		return [os.path.join('.', name)]
+	else:
+		return group_submodule_kunitconfig
+
 class LinuxSourceTree:
 	"""Represents a Linux kernel source tree with KUnit tests."""
 
@@ -275,6 +290,44 @@ class LinuxSourceTree:
 				   'on a different architecture with something like "--arch=x86_64".'
 		logging.error(message)
 		return False
+
+	def add_external_config(self, ex_config):
+		print("-------- Add External configs ----------")
+		if not ex_config:
+			logging.warning("No external config!")
+			return
+		for module in ex_config:
+			module_configs = get_sub_config(module)
+			for config in module_configs:
+				if not os.path.exists(config):
+					logging.error("Couldn't find kunitconfigs/kunitconfig.%s file" %module)
+					continue;
+				additional_config = kunit_config.parse_file(config)
+				print(additional_config)
+				self._kconfig.merge_in_entries(additional_config)
+		print("-------- External configs are added ----------")
+
+	def update_config(self, build_dir, make_options):
+		kconfig_path = get_kconfig_path(build_dir)
+		if build_dir and not os.path.exists(build_dir):
+			os.mkdir(build_dir)
+		try:
+			self._kconfig.write_to_file(kconfig_path)
+			self._ops.make_olddefconfig(build_dir, make_options)
+		except ConfigError as e:
+			logging.error(e)
+			return False
+
+		validated_kconfig = kunit_config.parse_file(kconfig_path)
+		if self._kconfig.is_subset_of(validated_kconfig):
+			return True
+		missing = set(self._kconfig.as_entries()) - set(validated_kconfig.as_entries())
+		message = 'Not all Kconfig options selected in kunitconfig were in the generated .config.\n' \
+			  'This is probably due to unsatisfied dependencies. Please double check dependencies of below configs.\n' \
+			  'Missing: ' + ', '.join(str(e) for e in missing)
+		logging.warning(message)
+		self._kconfig.remove_entry(missing)
+		return True
 
 	def build_config(self, build_dir: str, make_options) -> bool:
 		kconfig_path = get_kconfig_path(build_dir)

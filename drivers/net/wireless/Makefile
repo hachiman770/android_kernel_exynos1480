@@ -22,6 +22,7 @@ obj-$(CONFIG_WLAN_VENDOR_SILABS) += silabs/
 obj-$(CONFIG_WLAN_VENDOR_ST) += st/
 obj-$(CONFIG_WLAN_VENDOR_TI) += ti/
 obj-$(CONFIG_WLAN_VENDOR_ZYDAS) += zydas/
+obj-$(CONFIG_SCSC_CORE)               += scsc/
 
 # 16-bit wireless PCMCIA client drivers
 obj-$(CONFIG_PCMCIA_RAYCS)	+= ray_cs.o
@@ -32,3 +33,9 @@ obj-$(CONFIG_USB_NET_RNDIS_WLAN)	+= rndis_wlan.o
 obj-$(CONFIG_MAC80211_HWSIM)	+= mac80211_hwsim.o
 
 obj-$(CONFIG_VIRT_WIFI)	+= virt_wifi.o
+
+obj-$(CONFIG_CNSS2) += cnss2/
+obj-$(CONFIG_CNSS_UTILS) += cnss_utils/
+obj-$(CONFIG_CNSS_GENL) += cnss_genl/
+obj-$(CONFIG_WCNSS_MEM_PRE_ALLOC) += cnss_prealloc/
+obj-$(CONFIG_QCA_CLD_WLAN) += qualcomm/kiwi_v2/qcacld-3.0/
