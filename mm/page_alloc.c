@@ -74,6 +74,7 @@
 #include <linux/psi.h>
 #include <linux/padata.h>
 #include <linux/khugepaged.h>
+#include <linux/sched/cputime.h>
 #include <linux/buffer_head.h>
 #include <linux/delayacct.h>
 #include <trace/hooks/mm.h>
@@ -295,24 +296,6 @@ static int __init early_init_on_free(char *buf)
 	return kstrtobool(buf, &_init_on_free_enabled_early);
 }
 early_param("init_on_free", early_init_on_free);
-
-/*
- * A cached value of the page's pageblock's migratetype, used when the page is
- * put on a pcplist. Used to avoid the pageblock migratetype lookup when
- * freeing from pcplists in most cases, at the cost of possibly becoming stale.
- * Also the migratetype set in the page does not necessarily match the pcplist
- * index, e.g. page might have MIGRATE_CMA set but be on a pcplist with any
- * other index - this ensures that it will be put on the correct CMA freelist.
- */
-static inline int get_pcppage_migratetype(struct page *page)
-{
-	return page->index;
-}
-
-static inline void set_pcppage_migratetype(struct page *page, int migratetype)
-{
-	page->index = migratetype;
-}
 
 #ifdef CONFIG_PM_SLEEP
 /*
@@ -1437,6 +1420,7 @@ static __always_inline bool free_pages_prepare(struct page *page,
 	int bad = 0;
 	bool skip_kasan_poison = should_skip_kasan_poison(page, fpi_flags);
 	bool init = want_init_on_free();
+	bool compound = PageCompound(page);
 
 	VM_BUG_ON_PAGE(PageTail(page), page);
 
@@ -1456,20 +1440,20 @@ static __always_inline bool free_pages_prepare(struct page *page,
 		return false;
 	}
 
+	if (compound) {
+		VM_BUG_ON_PAGE(compound_order(page) != order, page);
+
+		ClearPageDoubleMap(page);
+		ClearPageHasHWPoisoned(page);
+	}
+
 	/*
 	 * Check tail pages before head page information is cleared to
 	 * avoid checking PageCompound for order-0 pages.
 	 */
 	if (unlikely(order)) {
-		bool compound = PageCompound(page);
 		int i;
 
-		VM_BUG_ON_PAGE(compound && compound_order(page) != order, page);
-
-		if (compound) {
-			ClearPageDoubleMap(page);
-			ClearPageHasHWPoisoned(page);
-		}
 		for (i = 1; i < (1 << order); i++) {
 			if (compound)
 				bad += free_tail_pages_check(page, page + i);
@@ -4443,6 +4427,10 @@ try_this_zone:
 static void warn_alloc_show_mem(gfp_t gfp_mask, nodemask_t *nodemask)
 {
 	unsigned int filter = SHOW_MEM_FILTER_NODES;
+	static DEFINE_RATELIMIT_STATE(show_mem_rs, HZ, 1);
+
+	if (!__ratelimit(&show_mem_rs))
+		return;
 
 	/*
 	 * This documents exceptions given to allocations in certain
@@ -4463,7 +4451,7 @@ void warn_alloc(gfp_t gfp_mask, nodemask_t *nodemask, const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
-	static DEFINE_RATELIMIT_STATE(nopage_rs, 10*HZ, 1);
+	static DEFINE_RATELIMIT_STATE(nopage_rs, 5*HZ, 2);
 
 	if ((gfp_mask & __GFP_NOWARN) ||
 	     !__ratelimit(&nopage_rs) ||
@@ -4914,7 +4902,8 @@ retry:
 	 */
 	if (!page && !drained) {
 		unreserve_highatomic_pageblock(ac, false);
-		drain_all_pages(NULL);
+		if (!need_memory_boosting())
+			drain_all_pages(NULL);
 		drained = true;
 		++retry_times;
 		goto retry;
@@ -5151,7 +5140,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
 	struct page *page = NULL;
 	unsigned int alloc_flags;
-	unsigned long did_some_progress;
+	unsigned long did_some_progress = 0;
 	enum compact_priority compact_priority;
 	enum compact_result compact_result;
 	int compaction_retries;
@@ -5161,6 +5150,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	int reserve_flags;
 	unsigned long alloc_start = jiffies;
 	bool should_alloc_retry = false;
+	unsigned long pages_reclaimed = 0;
+	int retry_loop_count = 0;
+	unsigned long jiffies_s = jiffies;
+	u64 utime, stime_s, stime_e, stime_d;
+
+	task_cputime(current, &utime, &stime_s);
+
 	/*
 	 * We also sanity check to catch abuse of atomic reserves being used by
 	 * callers that are not in atomic context.
@@ -5274,6 +5270,7 @@ restart:
 	}
 
 retry:
+	retry_loop_count++;
 	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
 	if (alloc_flags & ALLOC_KSWAPD)
 		wake_all_kswapds(order, gfp_mask, ac);
@@ -5321,6 +5318,7 @@ retry:
 	/* Try direct reclaim and then allocating */
 	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
 							&did_some_progress);
+	pages_reclaimed += did_some_progress;
 	if (page)
 		goto got_pg;
 
@@ -5441,6 +5439,30 @@ fail:
 	warn_alloc(gfp_mask, ac->nodemask,
 			"page allocation failure: order:%u", order);
 got_pg:
+	task_cputime(current, &utime, &stime_e);
+	stime_d = stime_e - stime_s;
+	if (stime_d / NSEC_PER_MSEC > 256) {
+		pg_data_t *pgdat;
+
+		unsigned long a_anon = 0;
+		unsigned long in_anon = 0;
+		unsigned long a_file = 0;
+		unsigned long in_file = 0;
+
+		for_each_online_pgdat(pgdat) {
+			a_anon += node_page_state(pgdat, NR_ACTIVE_ANON);
+			in_anon += node_page_state(pgdat, NR_INACTIVE_ANON);
+			a_file += node_page_state(pgdat, NR_ACTIVE_FILE);
+			in_file += node_page_state(pgdat, NR_INACTIVE_FILE);
+		}
+		pr_info("alloc stall: timeJS(ms):%u|%llu rec:%lu|%lu ret:%d o:%d gfp:%#x(%pGg) AaiFai:%lukB|%lukB|%lukB|%lukB\n",
+			jiffies_to_msecs(jiffies - jiffies_s),
+			stime_d / NSEC_PER_MSEC,
+			did_some_progress, pages_reclaimed, retry_loop_count,
+			order, gfp_mask, &gfp_mask,
+			a_anon << (PAGE_SHIFT-10), in_anon << (PAGE_SHIFT-10),
+			a_file << (PAGE_SHIFT-10), in_file << (PAGE_SHIFT-10));
+	}
 	trace_android_vh_alloc_pages_slowpath(gfp_mask, order, alloc_start);
 	return page;
 }
@@ -7200,6 +7222,8 @@ static void __init memmap_init(void)
 		init_unavailable_range(hole_pfn, end_pfn, zone_id, nid);
 }
 
+phys_addr_t memmapsize;
+
 void __init *memmap_alloc(phys_addr_t size, phys_addr_t align,
 			  phys_addr_t min_addr, int nid, bool exact_nid)
 {
@@ -7214,8 +7238,10 @@ void __init *memmap_alloc(phys_addr_t size, phys_addr_t align,
 						 MEMBLOCK_ALLOC_ACCESSIBLE,
 						 nid);
 
-	if (ptr && size > 0)
+	if (ptr && size > 0) {
+		memmapsize += size;
 		page_init_poison(ptr, size);
+	}
 
 	return ptr;
 }
@@ -8660,17 +8686,24 @@ unsigned long free_reserved_area(void *start, void *end, int poison, const char 
 		free_reserved_page(page);
 	}
 
-	if (pages && s)
+	if (pages && s) {
 		pr_info("Freeing %s memory: %ldK\n", s, K(pages));
+		if (!strcmp(s, "initrd") || !strcmp(s, "unused kernel")) {
+			long size;
+
+			size = -1 * (long)(pages << PAGE_SHIFT);
+			memblock_memsize_mod_kernel_size(size);
+		}
+	}
 
 	return pages;
 }
 
+unsigned long physpages, codesize, datasize, rosize, bss_size;
+unsigned long init_code_size, init_data_size;
+
 void __init mem_init_print_info(void)
 {
-	unsigned long physpages, codesize, datasize, rosize, bss_size;
-	unsigned long init_code_size, init_data_size;
-
 	physpages = get_num_physpages();
 	codesize = _etext - _stext;
 	datasize = _edata - _sdata;
@@ -9350,13 +9383,18 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 	unsigned int nr_reclaimed;
 	unsigned long pfn = start;
 	unsigned int tries = 0;
+	unsigned int max_tries = 5;
 	int ret = 0;
+	bool async_mode = cc->alloc_contig && cc->mode == MIGRATE_ASYNC;
 	struct migration_target_control mtc = {
 		.nid = zone_to_nid(cc->zone),
 		.gfp_mask = GFP_USER | __GFP_MOVABLE | __GFP_RETRY_MAYFAIL,
 	};
 
-	lru_cache_disable();
+	if (!async_mode)
+		lru_cache_disable();
+	else
+		max_tries = 1;
 
 	while (pfn < end || !list_empty(&cc->migratepages)) {
 		if (fatal_signal_pending(current)) {
@@ -9371,8 +9409,8 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 				break;
 			pfn = cc->migrate_pfn;
 			tries = 0;
-		} else if (++tries == 5) {
-			ret = -EBUSY;
+		} else if (++tries == max_tries) {
+			ret = ret < 0 ? ret : -EBUSY;
 			break;
 		}
 
@@ -9391,7 +9429,9 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 			break;
 	}
 
-	lru_cache_enable();
+	if (!async_mode)
+		lru_cache_enable();
+
 	if (ret < 0) {
 		if (!(cc->gfp_mask & __GFP_NOWARN) && ret == -EBUSY) {
 			struct page *page;
@@ -9442,7 +9482,7 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 		.nr_migratepages = 0,
 		.order = -1,
 		.zone = page_zone(pfn_to_page(start)),
-		.mode = MIGRATE_SYNC,
+		.mode = gfp_mask & __GFP_NORETRY ? MIGRATE_ASYNC : MIGRATE_SYNC,
 		.ignore_skip_hint = true,
 		.no_set_skip_hint = true,
 		.gfp_mask = current_gfp_context(gfp_mask),
@@ -9534,6 +9574,8 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 
 	/* Make sure the range is really isolated. */
 	if (test_pages_isolated(outer_start, end, 0)) {
+		pr_info_ratelimited("%s: [%lx, %lx) PFNs busy\n",
+			__func__, outer_start, end);
 		ret = -EBUSY;
 		goto done;
 	}
