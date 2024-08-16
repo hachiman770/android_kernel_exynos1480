@@ -49,6 +49,11 @@ class Kconfig:
 	def add_entry(self, name: str, value: str) -> None:
 		self._entries[name] = value
 
+	def remove_entry(self, entry_set) -> None:
+		for entry in entry_set:
+			print(f"Remove invalid config: {str(entry)}")
+			self._entries.pop(entry.name, None)
+
 	def is_subset_of(self, other: 'Kconfig') -> bool:
 		for name, value in self._entries.items():
 			b = other._entries.get(name)
