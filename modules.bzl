@@ -52,7 +52,7 @@ _COMMON_GKI_MODULES_LIST = [
     "net/8021q/8021q.ko",
     "net/bluetooth/bluetooth.ko",
     "net/bluetooth/hidp/hidp.ko",
-    "net/bluetooth/rfcomm/rfcomm.ko",
+    # "net/bluetooth/rfcomm/rfcomm.ko",
     "net/can/can.ko",
     "net/can/can-bcm.ko",
     "net/can/can-gw.ko",
