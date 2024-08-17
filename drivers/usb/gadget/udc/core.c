@@ -291,7 +291,8 @@ int usb_ep_queue(struct usb_ep *ep,
 {
 	int ret = 0;
 
-	if (WARN_ON_ONCE(!ep->enabled && ep->address)) {
+	if (!ep->enabled && ep->address) {
+		pr_err("%s: ep->enabled: %d, ep->address:0x %08x\n", __func__, ep->enabled, ep->address);
 		ret = -ESHUTDOWN;
 		goto out;
 	}
@@ -693,6 +694,7 @@ static int usb_gadget_connect_locked(struct usb_gadget *gadget)
 	}
 
 	ret = gadget->ops->pullup(gadget, 1);
+	pr_info("%s %d: ret %d\n", __func__, __LINE__, ret);
 	if (!ret)
 		gadget->connected = 1;
 
