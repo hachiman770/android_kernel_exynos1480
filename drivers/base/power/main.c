@@ -35,6 +35,7 @@
 #include <linux/devfreq.h>
 #include <linux/timer.h>
 #include <linux/wakeup_reason.h>
+#include <linux/sec_debug.h>
 
 #include "../base.h"
 #include "power.h"
@@ -239,8 +240,11 @@ static void dpm_wait(struct device *dev, bool async)
 	if (!dev)
 		return;
 
-	if (async || (pm_async_enabled && dev->power.async_suspend))
+	if (async || (pm_async_enabled && dev->power.async_suspend)) {
+		secdbg_dtsk_built_set_data(DTYPE_DPMDEV, dev);
 		wait_for_completion(&dev->power.completion);
+		secdbg_dtsk_built_clear_data();
+	}
 }
 
 static int dpm_wait_fn(struct device *dev, void *async_ptr)
@@ -709,6 +713,7 @@ static void dpm_noirq_resume_devices(pm_message_t state)
 
 	while (!list_empty(&dpm_noirq_list)) {
 		dev = to_device(dpm_noirq_list.next);
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 		list_move_tail(&dev->power.entry, &dpm_late_early_list);
 
@@ -730,6 +735,7 @@ static void dpm_noirq_resume_devices(pm_message_t state)
 
 		mutex_lock(&dpm_list_mtx);
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	dpm_show_time(starttime, state, 0, "noirq");
@@ -850,6 +856,7 @@ void dpm_resume_early(pm_message_t state)
 
 	while (!list_empty(&dpm_late_early_list)) {
 		dev = to_device(dpm_late_early_list.next);
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 		list_move_tail(&dev->power.entry, &dpm_suspended_list);
 
@@ -871,6 +878,7 @@ void dpm_resume_early(pm_message_t state)
 
 		mutex_lock(&dpm_list_mtx);
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	dpm_show_time(starttime, state, 0, "early");
@@ -1014,6 +1022,7 @@ void dpm_resume(pm_message_t state)
 
 	while (!list_empty(&dpm_suspended_list)) {
 		dev = to_device(dpm_suspended_list.next);
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 		if (!is_async(dev)) {
 			int error;
@@ -1039,6 +1048,7 @@ void dpm_resume(pm_message_t state)
 
 		mutex_lock(&dpm_list_mtx);
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	dpm_show_time(starttime, state, 0, NULL);
@@ -1112,6 +1122,7 @@ void dpm_complete(pm_message_t state)
 	while (!list_empty(&dpm_prepared_list)) {
 		struct device *dev = to_device(dpm_prepared_list.prev);
 
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 		dev->power.is_prepared = false;
 		list_move(&dev->power.entry, &list);
@@ -1126,6 +1137,7 @@ void dpm_complete(pm_message_t state)
 
 		mutex_lock(&dpm_list_mtx);
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	list_splice(&list, &dpm_list);
 	mutex_unlock(&dpm_list_mtx);
 
@@ -1305,6 +1317,7 @@ static int dpm_noirq_suspend_devices(pm_message_t state)
 	while (!list_empty(&dpm_late_early_list)) {
 		struct device *dev = to_device(dpm_late_early_list.prev);
 
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 		mutex_unlock(&dpm_list_mtx);
 
@@ -1328,6 +1341,7 @@ static int dpm_noirq_suspend_devices(pm_message_t state)
 		if (error || async_error)
 			break;
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	if (!error)
@@ -1492,6 +1506,7 @@ int dpm_suspend_late(pm_message_t state)
 	while (!list_empty(&dpm_suspended_list)) {
 		struct device *dev = to_device(dpm_suspended_list.prev);
 
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 
 		mutex_unlock(&dpm_list_mtx);
@@ -1517,6 +1532,7 @@ int dpm_suspend_late(pm_message_t state)
 		if (error || async_error)
 			break;
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	if (!error)
@@ -1776,6 +1792,7 @@ int dpm_suspend(pm_message_t state)
 	while (!list_empty(&dpm_prepared_list)) {
 		struct device *dev = to_device(dpm_prepared_list.prev);
 
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 
 		mutex_unlock(&dpm_list_mtx);
@@ -1800,6 +1817,7 @@ int dpm_suspend(pm_message_t state)
 		if (error || async_error)
 			break;
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	if (!error)
@@ -1913,6 +1931,7 @@ int dpm_prepare(pm_message_t state)
 	while (!list_empty(&dpm_list) && !error) {
 		struct device *dev = to_device(dpm_list.next);
 
+		secdbg_base_built_set_suspend_device(__func__, dev_name(dev));
 		get_device(dev);
 
 		mutex_unlock(&dpm_list_mtx);
@@ -1943,6 +1962,7 @@ int dpm_prepare(pm_message_t state)
 
 		mutex_lock(&dpm_list_mtx);
 	}
+	secdbg_base_built_set_suspend_device(NULL, NULL);
 	mutex_unlock(&dpm_list_mtx);
 	trace_suspend_resume(TPS("dpm_prepare"), state.event, false);
 	return error;
