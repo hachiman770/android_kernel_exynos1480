@@ -368,7 +368,9 @@ def add_parse_opts(parser) -> None:
 			    'prints to stdout or saves to file if a '
 			    'filename is specified',
 			    type=str, const='stdout', default=None, metavar='FILE')
-
+	parser.add_argument('-t', '--external_config', nargs='+',
+			    help='run kunit with a specific target kunitconfig',
+			    type=str)
 
 def tree_from_args(cli_args: argparse.Namespace) -> kunit_kernel.LinuxSourceTree:
 	"""Returns a LinuxSourceTree based on the user's arguments."""
@@ -441,6 +443,8 @@ def main(argv):
 			os.mkdir(cli_args.build_dir)
 
 		linux = tree_from_args(cli_args)
+		linux.add_external_config(cli_args.external_config)
+		linux.update_config(cli_args.build_dir, cli_args.make_options)
 		request = KunitRequest(build_dir=cli_args.build_dir,
 				       make_options=cli_args.make_options,
 				       jobs=cli_args.jobs,
