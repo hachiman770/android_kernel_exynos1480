@@ -309,6 +309,8 @@ enum TRANS_MODE {
 
 #define MDNIE_TRANS_MODE_PROPERTY ("mdnie_trans_mode")
 
+#define MDNIE_VIVIDNESS_LEVEL_PROPERTY ("mdnie_vividness_level")
+
 #define MDNIE_ENABLE_PROPERTY ("mdnie_enable")
 
 #define MDNIE_PRE_SEQ ("mdnie_pre_seq")
@@ -388,6 +390,7 @@ struct cal_coef {
 #define MAX_HBM_CE_LEVEL (64)
 #define MAX_ANTI_GLARE_LEVEL (6)
 #define MAX_EXTRA_DIM_LEVEL (100)
+#define MAX_VIVIDNESS_LEVEL (3)
 
 struct mdnie_tune {
 	struct seqinfo *seqtbl;
@@ -439,6 +442,7 @@ struct mdnie_properties {
 	u32 hbm_ce_level;
 	u32 anti_glare_level;
 	u32 extra_dim_level;
+	u32 vividness_level;
 
 	/* for color adjustment */
 	u8 scr[MAX_MDNIE_SCR_LEN];

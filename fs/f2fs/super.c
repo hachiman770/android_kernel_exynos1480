@@ -376,6 +376,7 @@ void f2fs_get_fsck_stat(struct f2fs_sb_info *sbi)
 
 	struct buffer_head *bh;
 	struct f2fs_sb_extra_flag_blk *extra_blk;
+	int type;
 
 	if (extra_flag_blk_no < 2) {
 		f2fs_warn(sbi, "extra_flag: No free blks for extra flags");
@@ -401,6 +402,9 @@ void f2fs_get_fsck_stat(struct f2fs_sb_info *sbi)
 			le32_to_cpu(extra_blk->valid_node_count);
 	sbi->sec_fsck_stat.valid_inode_count =
 			le32_to_cpu(extra_blk->valid_inode_count);
+
+	for (type = 0; type < NR_DDP_STAT_TYPE; type++)
+		sbi->sec_ddp_stat.ddp_stats[type] = le32_to_cpu(extra_blk->ddp_stats[type]);
 
 	brelse(bh);
 }

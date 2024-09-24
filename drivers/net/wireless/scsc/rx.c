@@ -1150,8 +1150,12 @@ void slsi_rx_rcl_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_bu
 	SLSI_DBG3(sdev, SLSI_MLME, "RCL Channel List Indication received\n");
 	ptr =  fapi_get_data(skb);
 	sig_data_len = fapi_get_datalen(skb);
-	if (sig_data_len)
+	if (sig_data_len >= 2) {
 		ie_len = ptr[1];
+	} else {
+		SLSI_ERR(sdev, "ERR: Failed to get Fapi data\n");
+		goto exit;
+	}
 
 	while (i < sig_data_len) {
 		le16_ptr = (__le16 *)&ptr[i];
@@ -1183,6 +1187,7 @@ void slsi_rx_rcl_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_bu
 	SLSI_MUTEX_UNLOCK(ndev_vif->vif_mutex);
 	if (ret)
 		SLSI_ERR(sdev, "ERR: Failed to send RCL channel list\n");
+exit:
 	kfree_skb(skb);
 }
 
@@ -2280,7 +2285,7 @@ void __slsi_rx_blockack_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 {
 	struct netdev_vif *ndev_vif = netdev_priv(dev);
 	struct ieee80211_mgmt *mgmt;
-	struct ieee80211_bar *bar;
+	struct ieee80211_bar *bar = NULL;
 	struct slsi_peer  *peer = NULL;
 	u8 *peer_mac_addr;
 	u16 params;
@@ -2296,7 +2301,12 @@ void __slsi_rx_blockack_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 			      fapi_get_vif(skb),
 			      fapi_get_buff(skb, u.ma_blockackreq_ind.timestamp));
 
-		bar = (fapi_get_datalen(skb)) ? (struct ieee80211_bar *)fapi_get_data(skb) : NULL;
+		if (fapi_get_datalen(skb) >= sizeof(struct ieee80211_bar)) {
+			bar = (struct ieee80211_bar *)fapi_get_data(skb);
+		} else {
+			SLSI_NET_DBG1(dev, SLSI_MLME, "invalid fapidata length.\n");
+			goto invalid;
+		}
 
 		if (!bar) {
 			WLBT_WARN(1, "invalid bulkdata for BAR frame\n");
@@ -2623,9 +2633,7 @@ void slsi_rx_roamed_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk
 	cancel_work_sync(&ndev_vif->update_pkt_filter_work);
 	SLSI_MUTEX_LOCK(ndev_vif->vif_mutex);
 
-	SLSI_NET_DBG1(dev, SLSI_MLME, "mlme_roamed_ind(vif:%d) Roaming to %pM\n",
-		      fapi_get_vif(skb),
-		      mgmt->bssid);
+	SLSI_NET_DBG1(dev, SLSI_MLME, "mlme_roamed_ind(vif:%d)\n", fapi_get_vif(skb));
 	if (!ndev_vif->activated) {
 		SLSI_NET_DBG1(dev, SLSI_MLME, "VIF not activated\n");
 		goto exit;
@@ -2640,7 +2648,14 @@ void slsi_rx_roamed_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk
 
 	slsi_rx_ba_stop_all(dev, peer);
 
-	SLSI_ETHER_COPY(peer->address, mgmt->bssid);
+	if (fapi_get_mgmtlen(skb) >= (offsetof(struct ieee80211_mgmt, bssid) + ETH_ALEN)) {
+		SLSI_NET_DBG1(dev, SLSI_MLME, "mlme_roamed_ind : Roaming to " MACSTR "\n",
+			      MAC2STR(mgmt->bssid));
+		SLSI_ETHER_COPY(peer->address, mgmt->bssid);
+	} else {
+		SLSI_NET_ERR(dev, "invalid fapi mgmt length.\n");
+		goto exit;
+	}
 
 	slsi_wake_lock(&sdev->wlan_wl_roam);
 
@@ -4806,8 +4821,10 @@ void slsi_rx_received_frame_ind(struct slsi_dev *sdev, struct net_device *dev, s
 		int mgmt_len;
 
 		mgmt_len = fapi_get_mgmtlen(skb);
-		if (!mgmt_len)
+		if (mgmt_len < offsetof(struct ieee80211_mgmt, frame_control) + 2) {
+			SLSI_NET_ERR(dev, "invalid fapi mgmt data\n");
 			goto exit;
+		}
 		mgmt = fapi_get_mgmt(skb);
 		if (ieee80211_is_auth(mgmt->frame_control)) {
 			cfg80211_rx_mgmt(&ndev_vif->wdev, frequency, 0, (const u8 *)mgmt, mgmt_len, GFP_ATOMIC);
@@ -4962,6 +4979,11 @@ void slsi_rx_received_frame_ind(struct slsi_dev *sdev, struct net_device *dev, s
 			schedule_work(&sdev->wakeup_time_work);
 			skb->mark = SLSI_WAKEUP_PKT_MARK;
 			slsi_rx_update_wake_stats(sdev, ehdr, skb->len - fapi_get_siglen(skb), skb);
+		}
+
+		if (fapi_get_datalen(skb) < sizeof(struct ethhdr)) {
+			SLSI_DBG1(sdev, SLSI_RX, "invalid fapi data length.\n");
+			goto exit;
 		}
 
 		peer = slsi_get_peer_from_mac(sdev, dev, ehdr->h_source);

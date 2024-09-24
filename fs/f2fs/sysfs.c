@@ -74,6 +74,17 @@ const char *sec_fua_mode_names[NR_F2FS_SEC_FUA_MODE] = {
 	"ALL",
 };
 
+const char *sec_ddp_stat_type_names[NR_DDP_STAT_TYPE] = {
+	"SUPER_BFREE",
+	"SHRINK_NBLK",
+	"SHRINK_TIME",
+	"SHRINK_ERRNO",
+	"GROW_TIME",
+	"DYNDATA_NBLK",
+	"MIGRATE_NSEG",
+	"MIGRATE_TTIME",
+};
+
 struct f2fs_attr {
 	struct attribute attr;
 	ssize_t (*show)(struct f2fs_attr *a, struct f2fs_sb_info *sbi, char *buf);
@@ -337,6 +348,21 @@ static ssize_t main_blkaddr_show(struct f2fs_attr *a,
 			(unsigned long long)MAIN_BLKADDR(sbi));
 }
 
+#define SEC_MAX_VOLUME_NAME	16
+static bool __volume_is_userdata(struct f2fs_sb_info *sbi)
+{
+	char volume_name[SEC_MAX_VOLUME_NAME] = {0, };
+
+	utf16s_to_utf8s(sbi->raw_super->volume_name, SEC_MAX_VOLUME_NAME,
+			UTF16_LITTLE_ENDIAN, volume_name, SEC_MAX_VOLUME_NAME);
+	volume_name[SEC_MAX_VOLUME_NAME - 1] = '\0';
+
+	if (!strcmp(volume_name, "data"))
+		return true;
+
+	return false;
+}
+
 static void __sec_bigdata_init_value(struct f2fs_sb_info *sbi,
 		const char *attr_name)
 {
@@ -396,6 +422,9 @@ static void __sec_bigdata_init_value(struct f2fs_sb_info *sbi,
 		sbi->s_sec_defrag_writes_kb = 0;
 		sbi->s_sec_num_apps = 0;
 		sbi->s_sec_capacity_apps_kb = 0;
+	} else if (!strcmp(attr_name, "sec_ddp_stat")) {
+		sbi->sec_ddp_stat.ddp_stats[DDP_MIGRATED_SEG_COUNT] = 0;
+		sbi->sec_ddp_stat.ddp_stats[DDP_MIGRATED_TTIME] = 0;
 	}
 }
 
@@ -568,6 +597,22 @@ static ssize_t f2fs_sbi_show(struct f2fs_attr *a,
 	}
 #endif
 
+	if (!strcmp(a->attr.name, "sec_ddp_stat")) {
+		int len = 0;
+
+		for (int i = 0; i < NR_DDP_STAT_TYPE - 1; i++) {
+			len += snprintf(buf + len, PAGE_SIZE - len, "\"%s\":\"%u\",",
+						sec_ddp_stat_type_names[i], sbi->sec_ddp_stat.ddp_stats[i]);
+		}
+		len += snprintf(buf + len, PAGE_SIZE - len, "\"%s\":\"%u\"\n",
+					sec_ddp_stat_type_names[NR_DDP_STAT_TYPE - 1],
+					sbi->sec_ddp_stat.ddp_stats[NR_DDP_STAT_TYPE - 1]);
+
+		if (!sbi->sec_hqm_preserve)
+			__sec_bigdata_init_value(sbi, a->attr.name);
+		return len;
+	}
+
 	if (!strcmp(a->attr.name, "ckpt_thread_ioprio")) {
 		struct ckpt_req_control *cprc = &sbi->cprc_info;
 		int class = IOPRIO_PRIO_CLASS(cprc->ckpt_thread_ioprio);
@@ -663,6 +708,43 @@ static bool check_streamid_params(struct f2fs_sb_info *sbi)
 	return false;
 }
 #endif
+
+void f2fs_write_ddp_stats(struct f2fs_sb_info *sbi)
+{
+	struct f2fs_super_block *fsb = sbi->raw_super;
+	unsigned long long extra_flag_blk_no = le32_to_cpu(fsb->cp_blkaddr) - 1;
+
+	struct buffer_head *bh;
+	struct f2fs_sb_extra_flag_blk *extra_blk;
+	int type;
+
+	if (extra_flag_blk_no < 2) {
+		f2fs_warn(sbi, "[DDP] extra_flag: No free blks for extra flags");
+		return;
+	}
+
+	bh = sb_bread(sbi->sb, (sector_t)extra_flag_blk_no);
+	if (!bh) {
+		f2fs_warn(sbi, "[DDP] extra_flag: Fail to allocate buffer_head");
+		return;
+	}
+
+	lock_buffer(bh);
+	extra_blk = (struct f2fs_sb_extra_flag_blk *)bh->b_data;
+
+	for (type = 0; type < NR_DDP_STAT_TYPE; type++)
+		extra_blk->ddp_stats[type] = cpu_to_le32(sbi->sec_ddp_stat.ddp_stats[type]);
+
+	set_buffer_uptodate(bh);
+	set_buffer_dirty(bh);
+	unlock_buffer(bh);
+
+	if (__sync_dirty_buffer(bh, REQ_SYNC | REQ_FUA))
+		f2fs_warn(sbi, "extra_flag: EIO");
+
+	brelse(bh);
+}
+
 static ssize_t __sbi_store(struct f2fs_attr *a,
 			struct f2fs_sb_info *sbi,
 			const char *buf, size_t count)
@@ -763,6 +845,50 @@ out:
 
 		return count;
 	}
+
+	if (!strcmp(a->attr.name, "sec_ddp_stat")) {
+		const char *name = strim((char *)buf);
+		struct f2fs_sec_ddp_info *ddp_stat = &sbi->sec_ddp_stat;
+		int type;
+
+		if (!__volume_is_userdata(sbi))
+			return -EINVAL;
+
+		/* expected "DDP:<ddp_stat_type_name>:<uint_value> */
+		if (strncmp(name, "DDP:", 4))
+			return -EINVAL;
+		name += 4;
+
+		for (type = 0; type < NR_DDP_STAT_TYPE; type++) {
+			if (!strncmp(name, sec_ddp_stat_type_names[type], strlen(sec_ddp_stat_type_names[type]))) {
+				name += strlen(sec_ddp_stat_type_names[type]);
+				if (*name != ':')
+					return -EINVAL;
+				name++;
+
+				ret = kstrtoul(name, 0, &t);
+				if (ret < 0)
+					return ret;
+				if (t >= UINT_MAX)
+					return -EINVAL;
+
+				ddp_stat->ddp_stats[type] = t;
+
+				if (type == DDP_GROW_ELAPSED_TIME) {
+					ddp_stat->ddp_stats[DDP_SHRINK_BLOCKS] = 0;
+					ddp_stat->ddp_stats[DDP_SHRINK_ELAPSED_TIME] = 0;
+					ddp_stat->ddp_stats[DDP_SHRINK_ERRNO] = 0;
+				}
+
+				f2fs_write_ddp_stats(sbi);
+
+				return count;
+			}
+		}
+
+		return -EINVAL;
+	}
+
 #ifdef CONFIG_F2FS_ML_BASED_STREAM_SEPARATION
 	if (!strcmp(a->attr.name, "streamid_attr")) {
 		char *streamid_buf;
@@ -1376,6 +1502,7 @@ F2FS_RW_ATTR_640(F2FS_SBI, f2fs_sb_info, sec_gc_stat, sec_stat);
 F2FS_RW_ATTR_640(F2FS_SBI, f2fs_sb_info, sec_io_stat, sec_stat);
 F2FS_RW_ATTR_640(F2FS_SBI, f2fs_sb_info, sec_fsck_stat, sec_fsck_stat);
 F2FS_RW_ATTR(F2FS_SBI, f2fs_sb_info, sec_heimdallfs_stat, sec_heimdallfs_stat);
+F2FS_RW_ATTR(F2FS_SBI, f2fs_sb_info, sec_ddp_stat, sec_ddp_stat);
 F2FS_RW_ATTR(F2FS_SBI, f2fs_sb_info, sec_part_best_extents, s_sec_part_best_extents);
 F2FS_RW_ATTR(F2FS_SBI, f2fs_sb_info, sec_part_current_extents, s_sec_part_current_extents);
 F2FS_RW_ATTR(F2FS_SBI, f2fs_sb_info, sec_part_score, s_sec_part_score);
@@ -1549,6 +1676,7 @@ static struct attribute *f2fs_attrs[] = {
 	ATTR_LIST(sec_io_stat),
 	ATTR_LIST(sec_fsck_stat),
 	ATTR_LIST(sec_heimdallfs_stat),
+	ATTR_LIST(sec_ddp_stat),
 	ATTR_LIST(sec_part_best_extents),
 	ATTR_LIST(sec_part_current_extents),
 	ATTR_LIST(sec_part_score),
@@ -1923,21 +2051,6 @@ void f2fs_exit_sysfs(void)
 	kset_unregister(&f2fs_kset);
 	remove_proc_entry("fs/f2fs", NULL);
 	f2fs_proc_root = NULL;
-}
-
-#define SEC_MAX_VOLUME_NAME	16
-static bool __volume_is_userdata(struct f2fs_sb_info *sbi)
-{
-	char volume_name[SEC_MAX_VOLUME_NAME] = {0, };
-
-	utf16s_to_utf8s(sbi->raw_super->volume_name, SEC_MAX_VOLUME_NAME,
-			UTF16_LITTLE_ENDIAN, volume_name, SEC_MAX_VOLUME_NAME);
-	volume_name[SEC_MAX_VOLUME_NAME - 1] = '\0';
-
-	if (!strcmp(volume_name, "data"))
-		return true;
-
-	return false;
 }
 
 int f2fs_register_sysfs(struct f2fs_sb_info *sbi)

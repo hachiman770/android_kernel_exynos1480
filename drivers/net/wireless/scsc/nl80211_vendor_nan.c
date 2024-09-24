@@ -2880,6 +2880,10 @@ void slsi_nan_event(struct slsi_dev *sdev, struct net_device *dev, struct sk_buf
 			    SLSI_NL80211_NAN_PUBLISH_TERMINATED_EVENT : SLSI_NL80211_NAN_SUBSCRIBE_TERMINATED_EVENT;
 		break;
 	case FAPI_EVENT_WIFI_EVENT_NAN_MATCH_EXPIRED:
+		if (identifier > SLSI_NAN_MAX_SERVICE_ID) {
+			SLSI_WARN(sdev, "serviceId(%d) > max(%d)\n", identifier, SLSI_NAN_MAX_SERVICE_ID);
+			goto exit;
+		}
 		if (ndev_vif->nan.nan_sdf_flags[identifier] & FAPI_NANSDFCONTROL_MATCH_EXPIRED_EVENT)
 			goto exit;
 		hal_event = SLSI_NL80211_NAN_MATCH_EXPIRED_EVENT;
@@ -2900,6 +2904,10 @@ void slsi_nan_event(struct slsi_dev *sdev, struct net_device *dev, struct sk_buf
 		ether_addr_copy(sdev->nan_cluster_id, mac_addr);
 		break;
 	case FAPI_EVENT_WIFI_EVENT_NAN_TRANSMIT_FOLLOWUP:
+		if (identifier > SLSI_NAN_MAX_SERVICE_ID) {
+			SLSI_WARN(sdev, "serviceId(%d) > max(%d)\n", identifier, SLSI_NAN_MAX_SERVICE_ID);
+			goto exit;
+		}
 		match_id = instanceid;
 		followup_trans_id = slsi_nan_get_followup_trans_id(ndev_vif, match_id);
 		slsi_nan_pop_followup_ids(sdev, dev, match_id);
@@ -2992,7 +3000,7 @@ void slsi_nan_send_disabled_event(struct slsi_dev *sdev, struct net_device *dev,
 void slsi_nan_followup_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_buff *skb)
 {
 	u16 tag_id, tag_len;
-	u8  *ptr;
+	u8  *ptr = NULL;
 	struct slsi_hal_nan_followup_ind *hal_evt;
 	struct sk_buff *nl_skb;
 	int res;
@@ -3021,7 +3029,10 @@ void slsi_nan_followup_ind(struct slsi_dev *sdev, struct net_device *dev, struct
 		  hal_evt->publish_subscribe_id,
 		  hal_evt->requestor_instance_id,
 		  MAC2STR(hal_evt->addr));
-	ptr = fapi_get_data(skb);
+
+	if (sig_data_len > 4)
+		ptr = fapi_get_data(skb);
+
 	if (ptr) {
 		tag_id = le16_to_cpu(*(u16 *)ptr);
 		tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
@@ -3113,7 +3124,7 @@ exit:
 void slsi_nan_service_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_buff *skb)
 {
 	u16 tag_id, tag_len;
-	u8  *ptr;
+	u8  *ptr = NULL;
 	const u8 *tag_data_ptr;
 	int sig_data_len;
 	struct slsi_hal_nan_match_ind *hal_evt;
@@ -3143,95 +3154,100 @@ void slsi_nan_service_ind(struct slsi_dev *sdev, struct net_device *dev, struct 
 	SLSI_INFO(sdev, "pub_sub_id:%d, req_instance_id:%d, ranging_event:%d, range_measurement_mm:%d\n",
 		  hal_evt->publish_subscribe_id, hal_evt->requestor_instance_id, hal_evt->ranging_event_type,
 		  hal_evt->range_measurement_mm);
-	ptr = fapi_get_data(skb);
-	tag_id = le16_to_cpu(*(u16 *)ptr);
-	tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
-	tag_data_ptr = ptr + 4;
 
-	while (sig_data_len >= tag_len + 4) {
-		switch (tag_id) {
-		case SLSI_NAN_TLV_TAG_MATCH_IND:
-			if (tag_len < 0x15) {
-				SLSI_WARN(sdev, "Invalid taglen(%d) for SLSI_NAN_TLV_TAG_MATCH_IND\n", tag_len);
+	if (sig_data_len > 4)
+		ptr = fapi_get_data(skb);
+
+	if (ptr) {
+		tag_id = le16_to_cpu(*(u16 *)ptr);
+		tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
+		tag_data_ptr = ptr + 4;
+
+		while (sig_data_len >= tag_len + 4) {
+			switch (tag_id) {
+			case SLSI_NAN_TLV_TAG_MATCH_IND:
+				if (tag_len < 0x15) {
+					SLSI_WARN(sdev, "Invalid taglen(%d) for SLSI_NAN_TLV_TAG_MATCH_IND\n", tag_len);
+					break;
+				}
+				ether_addr_copy(hal_evt->addr, tag_data_ptr);
+				/* To store the ethernet address for Cert */
+				slsi_add_nan_discovery_info(ndev_vif, hal_evt->addr, hal_evt->publish_subscribe_id, hal_evt->requestor_instance_id);
+				tag_data_ptr += ETH_ALEN;
+				hal_evt->match_occurred_flag = le16_to_cpu(*(u16 *)tag_data_ptr);
+				tag_data_ptr += 2;
+				hal_evt->out_of_resource_flag = le16_to_cpu(*(u16 *)tag_data_ptr);
+				tag_data_ptr += 2;
+				hal_evt->rssi_value = *tag_data_ptr;
+				tag_data_ptr++;
+				hal_evt->sec_info.cipher_type = *tag_data_ptr;
+				tag_data_ptr++;
+				hal_evt->peer_sdea_params.security_cfg = le16_to_cpu(*(u16 *)tag_data_ptr);
+				tag_data_ptr += 2;
+				hal_evt->peer_sdea_params.ranging_state = le16_to_cpu(*(u16 *)tag_data_ptr);
+				tag_data_ptr += 2;
+				hal_evt->range_measurement_mm = le32_to_cpu(*(u32 *)tag_data_ptr) * 10;
+				tag_data_ptr += 4;
+				hal_evt->ranging_event_type = *tag_data_ptr;
+				tag_data_ptr++;
+				break;
+			case SLSI_NAN_TLV_TAG_SERVICE_SPECIFIC_INFO:
+				hal_evt->service_specific_info_len = tag_len > SLSI_HAL_NAN_MAX_SERVICE_SPECIFIC_INFO_LEN ?
+							SLSI_HAL_NAN_MAX_SERVICE_SPECIFIC_INFO_LEN : tag_len;
+				memcpy(hal_evt->service_specific_info, tag_data_ptr, hal_evt->service_specific_info_len);
+				info_string = slsi_nan_convert_byte_to_string(hal_evt->service_specific_info_len,
+									      hal_evt->service_specific_info);
+				SLSI_DBG3(sdev, SLSI_GSCAN, "service_specific_info_len:%d, service_specific_info:%s\n",
+					  hal_evt->service_specific_info_len, info_string);
+				break;
+			case SLSI_NAN_TLV_TAG_EXT_SERVICE_SPECIFIC_INFO:
+				if (tag_len > SLSI_HAL_NAN_MAX_SDEA_SERVICE_SPEC_INFO_LEN)
+					hal_evt->sdea_service_specific_info_len = SLSI_HAL_NAN_MAX_SDEA_SERVICE_SPEC_INFO_LEN;
+				else
+					hal_evt->sdea_service_specific_info_len = tag_len;
+				memcpy(hal_evt->sdea_service_specific_info, tag_data_ptr,
+				       hal_evt->sdea_service_specific_info_len);
+				info_string = slsi_nan_convert_byte_to_string(hal_evt->sdea_service_specific_info_len,
+									      hal_evt->sdea_service_specific_info);
+				SLSI_DBG3(sdev, SLSI_GSCAN,
+					  "sdea_service_specific_info_len:%d, sdea_service_specific_info:%s\n",
+					  hal_evt->sdea_service_specific_info_len, info_string);
+				break;
+			case SLSI_NAN_TLV_TAG_DATA_PATH_SECURITY:
+				if (tag_len < 7) {
+					SLSI_WARN(sdev, "Invalid taglen(%d) for SLSI_NAN_TLV_TAG_DATA_PATH_SECURITY\n", tag_len);
+					break;
+				}
+				hal_evt->sec_info.key_info.key_type = *tag_data_ptr;
+				tag_data_ptr++;
+				hal_evt->sec_info.cipher_type = *tag_data_ptr;
+				tag_data_ptr++;
+				break;
+			case SLSI_NAN_TLV_TAG_MATCH_FILTER:
+				if (tag_len > SLSI_HAL_NAN_MAX_MATCH_FILTER_LEN)
+					hal_evt->sdf_match_filter_len = SLSI_HAL_NAN_MAX_MATCH_FILTER_LEN;
+				else
+					hal_evt->sdf_match_filter_len = tag_len;
+				memcpy(hal_evt->sdf_match_filter, tag_data_ptr, hal_evt->sdf_match_filter_len);
+				SLSI_DBG3(sdev, SLSI_GSCAN, "sdf_match_filter_len:%d, sdf_match_filter:%*.s\n",
+					  hal_evt->sdf_match_filter_len, hal_evt->sdf_match_filter_len > 20 ? 20
+					  : hal_evt->sdf_match_filter_len, hal_evt->sdf_match_filter);
+				break;
+			default:
+				SLSI_WARN(sdev, "Skip processing TLV %d\n", tag_id);
 				break;
 			}
-			ether_addr_copy(hal_evt->addr, tag_data_ptr);
-			/* To store the ethernet address for Cert */
-			slsi_add_nan_discovery_info(ndev_vif, hal_evt->addr, hal_evt->publish_subscribe_id, hal_evt->requestor_instance_id);
-			tag_data_ptr += ETH_ALEN;
-			hal_evt->match_occurred_flag = le16_to_cpu(*(u16 *)tag_data_ptr);
-			tag_data_ptr += 2;
-			hal_evt->out_of_resource_flag = le16_to_cpu(*(u16 *)tag_data_ptr);
-			tag_data_ptr += 2;
-			hal_evt->rssi_value = *tag_data_ptr;
-			tag_data_ptr++;
-			hal_evt->sec_info.cipher_type = *tag_data_ptr;
-			tag_data_ptr++;
-			hal_evt->peer_sdea_params.security_cfg = le16_to_cpu(*(u16 *)tag_data_ptr);
-			tag_data_ptr += 2;
-			hal_evt->peer_sdea_params.ranging_state = le16_to_cpu(*(u16 *)tag_data_ptr);
-			tag_data_ptr += 2;
-			hal_evt->range_measurement_mm = le32_to_cpu(*(u32 *)tag_data_ptr) * 10;
-			tag_data_ptr += 4;
-			hal_evt->ranging_event_type = *tag_data_ptr;
-			tag_data_ptr++;
-			break;
-		case SLSI_NAN_TLV_TAG_SERVICE_SPECIFIC_INFO:
-			hal_evt->service_specific_info_len = tag_len > SLSI_HAL_NAN_MAX_SERVICE_SPECIFIC_INFO_LEN ?
-						SLSI_HAL_NAN_MAX_SERVICE_SPECIFIC_INFO_LEN : tag_len;
-			memcpy(hal_evt->service_specific_info, tag_data_ptr, hal_evt->service_specific_info_len);
-			info_string = slsi_nan_convert_byte_to_string(hal_evt->service_specific_info_len,
-								      hal_evt->service_specific_info);
-			SLSI_DBG3(sdev, SLSI_GSCAN, "service_specific_info_len:%d, service_specific_info:%s\n",
-				  hal_evt->service_specific_info_len, info_string);
-			break;
-		case SLSI_NAN_TLV_TAG_EXT_SERVICE_SPECIFIC_INFO:
-			if (tag_len > SLSI_HAL_NAN_MAX_SDEA_SERVICE_SPEC_INFO_LEN)
-				hal_evt->sdea_service_specific_info_len = SLSI_HAL_NAN_MAX_SDEA_SERVICE_SPEC_INFO_LEN;
-			else
-				hal_evt->sdea_service_specific_info_len = tag_len;
-			memcpy(hal_evt->sdea_service_specific_info, tag_data_ptr,
-			       hal_evt->sdea_service_specific_info_len);
-			info_string = slsi_nan_convert_byte_to_string(hal_evt->sdea_service_specific_info_len,
-								      hal_evt->sdea_service_specific_info);
-			SLSI_DBG3(sdev, SLSI_GSCAN,
-				  "sdea_service_specific_info_len:%d, sdea_service_specific_info:%s\n",
-				  hal_evt->sdea_service_specific_info_len, info_string);
-			break;
-		case SLSI_NAN_TLV_TAG_DATA_PATH_SECURITY:
-			if (tag_len < 7) {
-				SLSI_WARN(sdev, "Invalid taglen(%d) for SLSI_NAN_TLV_TAG_DATA_PATH_SECURITY\n", tag_len);
-				break;
-			}
-			hal_evt->sec_info.key_info.key_type = *tag_data_ptr;
-			tag_data_ptr++;
-			hal_evt->sec_info.cipher_type = *tag_data_ptr;
-			tag_data_ptr++;
-			break;
-		case SLSI_NAN_TLV_TAG_MATCH_FILTER:
-			if (tag_len > SLSI_HAL_NAN_MAX_MATCH_FILTER_LEN)
-				hal_evt->sdf_match_filter_len = SLSI_HAL_NAN_MAX_MATCH_FILTER_LEN;
-			else
-				hal_evt->sdf_match_filter_len = tag_len;
-			memcpy(hal_evt->sdf_match_filter, tag_data_ptr, hal_evt->sdf_match_filter_len);
-			SLSI_DBG3(sdev, SLSI_GSCAN, "sdf_match_filter_len:%d, sdf_match_filter:%*.s\n",
-				  hal_evt->sdf_match_filter_len, hal_evt->sdf_match_filter_len > 20 ? 20
-				  : hal_evt->sdf_match_filter_len, hal_evt->sdf_match_filter);
-			break;
-		default:
-			SLSI_WARN(sdev, "Skip processing TLV %d\n", tag_id);
-			break;
-		}
 
-		sig_data_len -= tag_len + 4;
-		ptr += tag_len + 4;
-		if (sig_data_len > 4) {
-			tag_id = le16_to_cpu(*(u16 *)ptr);
-			tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
-			tag_data_ptr = ptr + 4;
-		} else {
-			tag_id = 0;
-			tag_len = 0;
+			sig_data_len -= tag_len + 4;
+			ptr += tag_len + 4;
+			if (sig_data_len > 4) {
+				tag_id = le16_to_cpu(*(u16 *)ptr);
+				tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
+				tag_data_ptr = ptr + 4;
+			} else {
+				tag_id = 0;
+				tag_len = 0;
+			}
 		}
 	}
 	SLSI_DBG3(sdev, SLSI_GSCAN,
@@ -3376,7 +3392,7 @@ static int slsi_nan_put_ndp_resp_ind_params(struct slsi_dev *sdev, struct net_de
 void slsi_nan_ndp_setup_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_buff *skb, bool is_req_ind)
 {
 	u16 tag_id, tag_len;
-	u8  *ptr;
+	u8  *ptr = NULL;
 	const u8 *tag_data_ptr;
 	int sig_data_len;
 	struct sk_buff *nl_skb;
@@ -3414,6 +3430,12 @@ void slsi_nan_ndp_setup_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 		flow_id = fapi_get_u16(skb, u.mlme_ndp_response_ind.flow_id);
 	}
 
+	if (ndp_instance_id == 0 || ndp_instance_id > SLSI_NAN_MAX_NDP_INSTANCES) {
+		SLSI_ERR(sdev, "Invalid ndp_instance_id:%d\n", ndp_instance_id);
+		kfree_skb(nl_skb);
+		goto exit;
+	}
+
 	SLSI_INFO(sdev, "is_req_ind:%d, peer_ndi:" MACSTR ", setup_response:%d, instance_id:%d\n",
 		  is_req_ind, MAC2STR(peer_ndi), ndp_setup_response, ndp_instance_id);
 	if (ndp_setup_response != NAN_DP_REQUEST_ACCEPT) {
@@ -3431,7 +3453,9 @@ void slsi_nan_ndp_setup_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 		slsi_nan_ndp_del_entry(sdev, dev, ndp_instance_id, false);
 	}
 
-	ptr = fapi_get_data(skb);
+	if (sig_data_len > 4)
+		ptr = fapi_get_data(skb);
+
 	if (ptr) {
 		tag_id = le16_to_cpu(*(u16 *)ptr);
 		tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
@@ -3481,16 +3505,13 @@ void slsi_nan_ndp_setup_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 		struct net_device *data_dev;
 		struct slsi_peer *peer = NULL;
 
-		if (ndp_instance_id == 0 || ndp_instance_id > SLSI_NAN_MAX_NDP_INSTANCES) {
-			SLSI_ERR(sdev, "Invalid ndp_instance_id:%d\n", ndp_instance_id);
-			goto exit;
-		}
 		ndev_vif->nan.ndp_active_id_map |=  BIT(ndp_instance_id);
 		data_dev = slsi_get_netdev_by_mac_addr_locked(sdev, ndev_vif->nan.ndp_ndi[ndp_instance_id - 1],
 							      SLSI_NAN_DATA_IFINDEX_START);
 
 		if (!data_dev) {
 			SLSI_ERR(sdev, "no data_dev for ndp_instance_id:%d ndi[" MACSTR "]\n", ndp_instance_id, MAC2STR(ndev_vif->nan.ndp_ndi[ndp_instance_id - 1]));
+			kfree_skb(nl_skb);
 			goto exit;
 		}
 		ndev_data_vif = netdev_priv(data_dev);
@@ -3505,6 +3526,7 @@ void slsi_nan_ndp_setup_ind(struct slsi_dev *sdev, struct net_device *dev, struc
 		if (!slsi_vif_activated_post(sdev, data_dev, ndev_data_vif)) {
 			SLSI_ERR(sdev, "fail to activate NAN NDI VIF\n");
 			SLSI_MUTEX_UNLOCK(ndev_data_vif->vif_mutex);
+			kfree_skb(nl_skb);
 			goto exit;
 		}
 #endif
@@ -3562,7 +3584,7 @@ exit:
 void slsi_nan_ndp_requested_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_buff *skb)
 {
 	u16 tag_id, tag_len = 0, ndl_vif_id, local_ndp_instance_id;
-	u8  *ptr, *peer_nmi;
+	u8  *ptr = NULL, *peer_nmi;
 	const u8 *tag_data_ptr;
 	int sig_data_len, res;
 	struct sk_buff *nl_skb;
@@ -3574,6 +3596,7 @@ void slsi_nan_ndp_requested_ind(struct slsi_dev *sdev, struct net_device *dev, s
 	SLSI_MUTEX_LOCK(sdev->netdev_add_remove_mutex);
 	SLSI_MUTEX_LOCK(ndev_vif->vif_mutex);
 	sig_data_len = fapi_get_datalen(skb);
+
 	ndev_vif->nan.ndp_start_time = jiffies;
 
 #if (KERNEL_VERSION(4, 1, 0) <= LINUX_VERSION_CODE)
@@ -3603,7 +3626,10 @@ void slsi_nan_ndp_requested_ind(struct slsi_dev *sdev, struct net_device *dev, s
 		  MAC2STR(peer_nmi),
 		  ndp_instance_id,
 		  fapi_get_u16(skb, u.mlme_ndp_requested_ind.security_required));
-	ptr = fapi_get_data(skb);
+
+	if (sig_data_len > 4)
+		ptr = fapi_get_data(skb);
+
 	if (ptr) {
 		tag_id = le16_to_cpu(*(u16 *)ptr);
 		tag_len = le16_to_cpu(*(u16 *)(ptr + 2));
