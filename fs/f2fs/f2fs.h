@@ -1700,6 +1700,22 @@ struct f2fs_sec_heimdallfs_stat {
 	u64 nr_comp_saved_blks;
 };
 
+enum sec_ddp_stat_type {
+	DDP_SUPER_FREE_BLOCKS,		/* # of free blocks in super (expected close to 262144(1GB)) */
+	DDP_SHRINK_BLOCKS,			/* # of shrunk blocks of last f2fs_resize_fs */
+	DDP_SHRINK_ELAPSED_TIME,	/* elapsed time of last f2fs_resize_fs */
+	DDP_SHRINK_ERRNO,			/* errno of last resize */
+	DDP_GROW_ELAPSED_TIME,		/* elapsed time of last resize.f2fs to grow dyndata */
+	DDP_DYNDATA_RANGE,			/* # of blocks in dyndata */
+	DDP_MIGRATED_SEG_COUNT,		/* # of segments migrated to allocate pin file */
+	DDP_MIGRATED_TTIME,			/* daily accumulated time to migrate segments*/
+	NR_DDP_STAT_TYPE
+};
+
+struct f2fs_sec_ddp_info {
+	u32 ddp_stats[NR_DDP_STAT_TYPE];
+};
+
 #ifdef CONFIG_F2FS_SEC_BLOCK_OPERATIONS_DEBUG
 #define F2FS_SEC_BLKOPS_ENTRIES		10
 #define F2FS_SEC_BLKOPS_LOGGING_THR	5		// > 5 Secs -> logging
@@ -2000,6 +2016,7 @@ struct f2fs_sb_info {
 	struct f2fs_sec_fsck_info sec_fsck_stat;
 
 	struct f2fs_sec_heimdallfs_stat sec_heimdallfs_stat;
+	struct f2fs_sec_ddp_info sec_ddp_stat;
 
 	/* To gather information of fragmentation */
 	unsigned int s_sec_part_best_extents;
@@ -4513,6 +4530,7 @@ int __init f2fs_init_sysfs(void);
 void f2fs_exit_sysfs(void);
 int f2fs_register_sysfs(struct f2fs_sb_info *sbi);
 void f2fs_unregister_sysfs(struct f2fs_sb_info *sbi);
+void f2fs_write_ddp_stats(struct f2fs_sb_info *sbi);
 
 /* verity.c */
 extern const struct fsverity_operations f2fs_verityops;

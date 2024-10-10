@@ -82,6 +82,7 @@ static int amdgpu_cs_user_fence_chunk(struct amdgpu_cs_parser *p,
 
 error_unref:
 	amdgpu_bo_unref(&bo);
+	p->uf_entry.tv.bo = NULL;
 	return r;
 }
 

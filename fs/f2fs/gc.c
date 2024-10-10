@@ -2036,6 +2036,7 @@ static int free_segment_range(struct f2fs_sb_info *sbi,
 	unsigned int freed_secs = 0;
 	int err = 0;
 	int type;
+	unsigned long long gc_start_time = 0, gc_end_time = 0;
 
 	/* Force block allocation for GC */
 	MAIN_SECS(sbi) -= secs;
@@ -2062,6 +2063,7 @@ static int free_segment_range(struct f2fs_sb_info *sbi,
 
 	mutex_unlock(&DIRTY_I(sbi)->seglist_lock);
 
+	gc_start_time = local_clock();
 	/* Move out cursegs from the target range */
 	for (type = CURSEG_HOT_DATA; type < NR_CURSEG_TYPE; type++)
 		f2fs_allocate_segment_for_resize(sbi, type, start, end);
@@ -2092,6 +2094,10 @@ static int free_segment_range(struct f2fs_sb_info *sbi,
 	err = f2fs_write_checkpoint(sbi, &cpc);
 	if (err)
 		goto out;
+
+	gc_end_time = local_clock();
+	sbi->sec_stat.gc_count[FG_GC]++;
+	f2fs_update_gc_total_time(sbi, gc_start_time, gc_end_time, FG_GC);
 
 	next_inuse = find_next_inuse(FREE_I(sbi), end + 1, start);
 	if (next_inuse <= end) {
@@ -2166,7 +2172,22 @@ static void update_fs_metadata(struct f2fs_sb_info *sbi, int secs)
 	}
 }
 
-int f2fs_resize_fs(struct file *filp, __u64 block_count)
+static void f2fs_update_sec_ddp_time_stats(struct f2fs_sb_info *sbi,
+		unsigned long long start, unsigned long long end, int type)
+{
+	if (type != DDP_MIGRATED_TTIME && type != DDP_SHRINK_ELAPSED_TIME)
+		return;
+
+	if (type == DDP_SHRINK_ELAPSED_TIME)
+		sbi->sec_ddp_stat.ddp_stats[type] = 0;
+
+	if (!(div_u64((end - start), GC_TIME_RECORD_UNIT)))
+		sbi->sec_ddp_stat.ddp_stats[type]++;
+	else
+		sbi->sec_ddp_stat.ddp_stats[type] += div_u64((end - start), GC_TIME_RECORD_UNIT);
+}
+
+static int __f2fs_resize_fs(struct file *filp, __u64 block_count)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(file_inode(filp));
 	__u64 old_block_count, shrunk_blocks;
@@ -2300,6 +2321,28 @@ out_err:
 	f2fs_up_write(&sbi->cp_global_sem);
 	f2fs_up_write(&sbi->gc_lock);
 	thaw_super(sbi->sb);
+
+	sbi->sec_ddp_stat.ddp_stats[DDP_SHRINK_BLOCKS] = shrunk_blocks;
+	return err;
+}
+
+int f2fs_resize_fs(struct file *filp, __u64 block_count)
+{
+	struct f2fs_sb_info *sbi = F2FS_I_SB(file_inode(filp));
+	int err;
+	unsigned long long resize_start_time = 0, resize_end_time = 0;
+
+	resize_start_time = local_clock();
+	err = __f2fs_resize_fs(filp, block_count);
+	resize_end_time = local_clock();
+	f2fs_update_sec_ddp_time_stats(sbi, resize_start_time, resize_end_time, DDP_SHRINK_ELAPSED_TIME);
+
+	if (err)
+		sbi->sec_ddp_stat.ddp_stats[DDP_SHRINK_BLOCKS] = 0;
+	sbi->sec_ddp_stat.ddp_stats[DDP_SHRINK_ERRNO] = -err;
+	sbi->sec_ddp_stat.ddp_stats[DDP_GROW_ELAPSED_TIME] = 0;
+	f2fs_write_ddp_stats(sbi);
+
 	return err;
 }
 
@@ -2368,6 +2411,8 @@ out:
 
 	sbi->sec_stat.gc_count[FG_GC]++;
 	f2fs_update_gc_total_time(sbi, gc_start_time, gc_end_time, FG_GC);
+	f2fs_update_sec_ddp_time_stats(sbi, gc_start_time, gc_end_time, DDP_MIGRATED_TTIME);
+	sbi->sec_ddp_stat.ddp_stats[DDP_MIGRATED_SEG_COUNT] += seg_freed;
 
 	f2fs_up_write(&sbi->cp_global_sem);
 	f2fs_up_write(&sbi->gc_lock);

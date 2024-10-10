@@ -33,7 +33,7 @@
 	};
 };
 
-/* /home/dpi/qb5_8814/workspace/P4_1716/android/kernel/kmodule/input/sec_input_2023/touchscreen/goodix/berlin/dts/input-lsi-tsp-berlin.a55x.dtsi */
+/* /home/dpi/qb5_8815/workspace/P4_1716/android/kernel/kmodule/input/sec_input_2023/touchscreen/goodix/berlin/dts/input-lsi-tsp-berlin.a55x.dtsi */
 &tsp_goodix {
 	status = "okay";
 	/delete-property/ tsp_io_ldo-supply;
@@ -81,6 +81,7 @@
 	sec,watch_dog_reg = <0xD040>;
 	sec,config_id_reg = <0x10076>;
 	sec,enable_misctl_val = <0x20700000>;
+	goodix,edgehandler_direction_max = <5>;
 };
 
 &hsi2c28_bus {

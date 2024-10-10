@@ -129,6 +129,17 @@ enum otg_notify_data_role {
 	HNOTIFY_DFP,
 };
 
+enum usb_restrict_type {
+	USB_SECURE_RESTRICTED,
+	USB_SECURE_RELEASE,
+};
+
+enum usb_restrict_group {
+	USB_GROUP_AUDIO,
+	USB_GROUP_OTEHR,
+	USB_GROUP_MAX,
+};
+
 enum usb_certi_type {
 	USB_CERTI_UNSUPPORT_ACCESSORY,
 	USB_CERTI_NO_RESPONSE,
@@ -168,6 +179,11 @@ enum otg_notify_reverse_bypass_status {
 	NOTIFY_EVENT_REVERSE_BYPASS_OFF,
 	NOTIFY_EVENT_REVERSE_BYPASS_PREPARE,
 	NOTIFY_EVENT_REVERSE_BYPASS_ON,
+};
+
+enum otg_notify_illegal_type {
+	NOTIFY_EVENT_AUDIO_DESCRIPTOR,
+	NOTIFY_EVENT_SECURE_DISCONNECTION,
 };
 
 struct otg_notify {
@@ -246,6 +262,9 @@ extern int send_usb_notify_uevent
 extern int check_new_device_added(struct usb_device *udev);
 extern int set_lpm_charging_type_done(struct otg_notify *n,
 		unsigned int state);
+extern int detect_illegal_condition(int type);
+extern int check_usbaudio(struct usb_device *dev);
+extern int check_usbgroup(struct usb_device *dev);
 #if defined(CONFIG_USB_HW_PARAM)
 extern unsigned long long *get_hw_param(struct otg_notify *n,
 					enum usb_hw_param index);
@@ -313,6 +332,9 @@ static inline int send_usb_notify_uevent
 static inline int check_new_device_added(struct usb_device *udev) {return 0; }
 static inline int set_lpm_charging_type_done(struct otg_notify *n,
 		unsigned int state) {return 0; }
+static inline int detect_illegal_condition(int type) {return 0; }
+static inline int check_usbaudio(struct usb_device *dev) {return 0; }
+static inline int check_usbgroup(struct usb_device *dev) {return 0; }
 #if defined(CONFIG_USB_HW_PARAM)
 static inline unsigned long long *get_hw_param(struct otg_notify *n,
 			enum usb_hw_param index) {return NULL; }
